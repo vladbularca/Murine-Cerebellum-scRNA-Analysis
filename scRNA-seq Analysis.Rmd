@@ -33,6 +33,7 @@ library("org.Mm.eg.db")
 library("dplyr")
 library("stringr")
 library("clusterProfiler")
+library("igraph")
 
 ```
 
@@ -44,12 +45,12 @@ library("clusterProfiler")
 raw_dir <- "GSE224466_RAW"
 all_files <- list.files(raw_dir, full.names = TRUE, recursive = FALSE)
 
-# Extract unique sample prefixes
+# Extract unique sample prefixes - only if data is retrieved directly from GEO
 
 prefixes <- unique(gsub("_(barcodes|genes|matrix)\\.tsv$|_matrix\\.mtx$", "", basename(all_files)))
 
 
-# Create sub-folders and move files 
+# Create sub-folders and move files - only if data is retrieved directly from GEO
 
 for (prefix in prefixes) {
   sample_dir <- file.path(raw_dir, prefix)
@@ -94,7 +95,6 @@ sum(sapply(seurat_list, ncol))
 
 sapply(seurat_list, function(seurat_obj) {sum(seurat_obj$nCount_RNA == 0, na.rm = TRUE)})
 
-# 12,13 and 14 have a very high percentage of cells with 0 UMI counts
 
 # Removing barcodes from the sample name for each cell
 
@@ -121,7 +121,9 @@ seurat_list <- seurat_list[sorted_indices]
 ```
 
 ```{r}
-# Identifying mitochondrial genes and creating a mitochondial percentage column for each cell 
+# Identifying mitochondrial genes and creating a mitochondial percentage column for each cell
+
+# Read in any of the genes files to determine comprehensive gene list 
 
 genes_file <- "GSE224466_RAW/GSM7024833_PAN_CB_E13_A/genes.tsv"
 
@@ -153,13 +155,12 @@ seurat_list <- lapply(seurat_list, function(seurat_obj) {
 
 head(seurat_list[[1]][["percent.ribo"]])
 
-
 ```
 
 
 
 ``` {r}
-# Sub-setting each object to filter out cells with over 10 % mitochondrial DNA, remove mitochondrial and ribosomal genes and filtering out cells with less than 3200 total transcripts and over 15,000 transcripts. 
+# Sub-setting each object to filter out cells with over 10 % mitochondrial DNA, remove mitochondrial and ribosomal genes, cells with less than 3200 total transcripts and over 15,000 transcripts and those with less than 500 features 
 
 filtered_list <- lapply(seurat_list, function (seurat_obj) {
   seurat_obj <- subset(seurat_obj, subset = percent.mt < 10)
@@ -190,11 +191,6 @@ filtered_list <- lapply(filtered_list, function(obj) {
   subset(obj, features = names(genes_to_keep[genes_to_keep]))
 })
 
-
-# saveRDS(filtered_list, file = "filtered_list.rds")
-# filtered_list <- readRDS("filtered_list.rds")
-
-
 # Summary statistics for each object 
 
 lapply(filtered_list, function(seurat_obj) {summary(seurat_obj$nCount_RNA)})
@@ -205,6 +201,7 @@ lapply(filtered_list, function(seurat_obj) {summary(seurat_obj$nCount_RNA)})
 for (i in seq_along(filtered_list)) {cat("Sample", i, "has", ncol(filtered_list[[i]]), "cells after filtering\n")}
 
 # Mean nCount_RNA after filtering
+
 sapply(filtered_list, function(obj) {tapply(obj$nCount_RNA, obj$sample, mean)})
 
 ```
@@ -334,7 +331,7 @@ ggplot(df, aes(x = label_part, y = nCount_RNA)) +
   geom_jitter(width = 0.2, size = 0.4, alpha = 0.6) +
   geom_point(data = means, aes(x = label_part, y = mean_nCount), 
              color = "darkred", size = 2.0) +
-  labs(x = "Sample", y = "Average UMI Count") +
+  labs(x = "Sample", y = "Total UMI Count") +
   scale_y_continuous(breaks = seq(0, max(df$nCount_RNA), by = 1500)) +  # Set y-axis breaks
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
@@ -343,7 +340,9 @@ ggplot(df, aes(x = label_part, y = nCount_RNA)) +
 
 
 ``` {r}
-# Normalizing the data 
+# Joining layers and normalizing the data  
+
+merged_obj <- JoinLayers(merged_obj) # required for downstream processing
 
 merged_obj <- NormalizeData(merged_obj, verbose = FALSE)
 merged_obj <- FindVariableFeatures(merged_obj, selection.method = "vst", nfeatures = 2000, verbose = FALSE) # Based on the 2000 most variable features
@@ -352,9 +351,10 @@ dup_genes <- rownames(merged_obj[["RNA"]])[duplicated(rownames(merged_obj[["RNA"
 merged_obj <- merged_obj[!rownames(merged_obj[["RNA"]]) %in% dup_genes, ]
 
 
-merged_obj <- JoinLayers(merged_obj)
-
 # Regressing out cell cycle markers
+
+s.genes <- tolower(cc.genes$s.genes)
+g2m.genes <- tolower(cc.genes$g2m.genes)
 
 valid_s_genes <- tolower(s.genes[s.genes %in% rownames(merged_obj)])
 valid_g2m_genes <- tolower(g2m.genes[g2m.genes %in% rownames(merged_obj)])
@@ -369,7 +369,6 @@ rownames(merged_obj) <- tolower(rownames(merged_obj))
 
 merged_obj <- CellCycleScoring(merged_obj, s.features = valid_s_genes, g2m.features = valid_g2m_genes, assay = "RNA", set.ident = TRUE)
 
- 
 # With cell cycle phase differences regressed out
 merged_obj$CC.Difference <- merged_obj$S.Score - merged_obj$G2M.Score
 
@@ -390,21 +389,18 @@ write.csv(cell_counts, "cell_counts.csv", row.names = FALSE)
 
 merged_obj <- RunPCA(merged_obj, features = VariableFeatures(merged_obj), npcs = 40, verbose = FALSE)
 merged_obj <- FindNeighbors(merged_obj, dims = 1:40, verbose = FALSE)
-merged_obj <- FindClusters(merged_obj, resolution = 1.4, verbose = FALSE)
+merged_obj <- FindClusters(merged_obj, resolution = 1.4, verbose = FALSE)  # Try different resolution from 0.4 - 1.4 ß
 merged_obj <- RunUMAP(merged_obj, dims = 1:40, verbose = FALSE)
 
-saveRDS(merged_obj, file = "merged_obj2.rds")
-#merged_obj <- readRDS("merged_obj.rds")
+# Save to rds file so it can be loaded in directly if needed
+
+saveRDS(merged_obj, file = "merged_obj.rds")
+merged_obj <- readRDS("merged_obj.rds")
 
 
 # Cluster summary
-table(merged_obj$seurat_clusters)
 
-# Importing previously defined clusters
-barcode_clusters <- read.csv("custom_clusters2.csv", stringsAsFactors = FALSE)
-cluster_vec <- setNames(barcode_clusters$Cluster, barcode_clusters$Barcode)
-common_barcodes <- intersect(names(cluster_vec), colnames(merged_obj))
-Idents(merged_obj) <- factor(cluster_vec[common_barcodes])
+table(merged_obj$seurat_clusters)
 
 ```
 
@@ -416,32 +412,22 @@ ElbowPlot(merged_obj, ndims = 40)
 
 #Visualization of UMAP
 
-DimPlot(merged_obj, reduction = "umap", label = TRUE, group.by = "seurat_clusters") + NoLegend()
+DimPlot(merged_obj, reduction = "umap", label = TRUE, group.by = "seurat_clusters") + NoLegend() + 
 DimPlot(subset_obj, reduction = "umap", label = TRUE, group.by = "seurat_clusters") + NoLegend()
 DimPlot(merged_obj, reduction = "umap", label = TRUE, repel = TRUE) +  NoLegend() + theme(plot.title = element_text(size = 4, face = "bold"))
 
-# Sub-setting the data to include only cell types of cerebellar origin
+# Sub-setting the data to include only cell types of cerebellar origin - skip this
 
 excluded_clusters <- c("29", "36", "39", "40", "41", "30", "28", "37", "38")
 
 Idents(merged_obj) <- "seurat_clusters"
 
-# Keep only embryonic stages and P0 (only if needed)
-# keep_timepoints <- grep("E1[0-4]", merged_obj$label_part, value = TRUE)
-
-
 subset_obj <- subset(merged_obj, idents = setdiff(levels(merged_obj), excluded_clusters))
 
-#subset_obj <- subset(
-  merged_obj,
-  subset = !(Idents(merged_obj) %in% excluded_clusters) & label_part %in% keep_timepoints
-  )
-
-# label_part %in% keep_timepoints
 ``` 
 
 ```{r}
-# removing midbrain cells
+# Removing midbrain cells - optional (determine if these are present first)
 
 midbrain_genes <- (c("tlx3", "isl1", "dlk1", "otx2", "sncg", "tal2", "phox2a", "phox2b"))
 
@@ -462,8 +448,6 @@ FeaturePlot(subset_obj, features = "MidbrainScore1") + labs(title = "Midbrain Sc
 
 subset_obj<- subset(subset_obj, subset = MidbrainScore1 <= 0.25)
 
-
-
 VlnPlot(subset_obj, features = "MidbrainScore1", group.by = "seurat_clusters")
 
 
@@ -478,6 +462,7 @@ seurat_final[["RNA"]] <- new_rna
 
 # Re-clustering the data after removing midbrain cells and keeping only clusters of interest
 
+seurat_final3 <- JoinLayers(seurat_final3)
 seurat_final3 <- NormalizeData(subset_obj)
 seurat_final3 <- FindVariableFeatures(seurat_final3, selection.method = "vst", nfeatures = 2000, verbose = FALSE) # Based on the 2000 most variable features
 
@@ -491,8 +476,7 @@ seurat_final3 <- RunUMAP(seurat_final3, dims = 1:40, verbose = FALSE)
 
 DimPlot(seurat_final3, reduction = "umap", label = TRUE, group.by = "seurat_clusters") + NoLegend()
 
-seurat_final3 <- JoinLayers(seurat_final3)
-
+# Determining marker genes between each of the clusters, which are then used to assign cluster identity
 
 all_markers <- FindAllMarkers(seurat_final3, assay ="RNA", slot = "data", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
 
@@ -503,8 +487,10 @@ top_markers <- all_markers %>%
     slice_max(order_by = avg_log2FC, n = 15) %>%
     ungroup()
  
+# Save rds file of final data structure
+
 saveRDS(seurat_final3, file = "seurat_final3.rds")
-#seurat_final <- readRDS("seurat_final2.rds")
+seurat_final3<- readRDS("seurat_final3.rds")
 
 cluster_ids3 <- c(
   "0" = "GNPs/Granule Neurons", "1" = "GNPs/Granule Neurons", "2" = "Early Progenitors", "3" = "GABAergic Progenitors", "4" = "GNPs/Granule Neurons",
@@ -519,14 +505,17 @@ cluster_ids3 <- c(
 
 seurat_final3 <- RenameIdents(seurat_final3, cluster_ids3)
 
+Idents(seurat_final3) <- "seurat_clusters"
+
 n_clusters <- length(unique(Idents(seurat_final3)))
 
-#colors <- colorRampPalette(brewer.pal(8, "Set2"))(n_clusters)
-#colors <- createPalette(n_clusters, seedcolors = 	seed_colors <- c("#cbd5e8", "#6699CC", "#CC9966", "#CC6699"))
+# Determining colour palette for visualizations
+
 colors <- kelly.colors(n_clusters + 1)
 filtered_cols <- colors[ colors != "#222222" ]
 filtered_cols[ filtered_cols == "#f2f3f4" ] <- "#66CC99"
 names(filtered_cols)[names(filtered_cols) == "white"] <- "green2"
+
 desired_order <- c("red", "orange", "orangeyellow", "yellow", "yellowishpink", 
     "purplishpink", "purple", "violet", "blue", "lightblue", 
                    "green", "green2", "gray", "buff")
@@ -535,12 +524,12 @@ filtered_cols <- filtered_cols[desired_order]
 
 celltypes <- levels(Idents(seurat_final3))  # Or however you define your identities
 named_colors <- setNames(filtered_cols[1:length(celltypes)], celltypes)
-named_colors <- desaturate(named_colors, amount = 0.35)
+named_colors <- desaturate(named_colors, amount = 0.15)
 
+DimPlot(seurat_final3, cols = named_colors, reduction = "umap", label = TRUE, repel = TRUE, label.size = 3.5, label.color = "black")  + labs(x= "UMAP-1 (1st Abstract Dimension of the UMAP Embedding)", y="UMAP-2 (2nd Abstract Dimension of the UMAP Embedding)",) + theme(plot.title = element_text(size = 2, face = "bold"), legend.position = "top", legend.justification = "center",
+    legend.box.just = "center", legend.text = element_text(size = 7), legend.spacing.x = unit(0.025, "cm"), legend.key.size = unit(0.2, "lines"), axis.title = element_text(size = 9), axis.text = element_text(size = 8)) 
 
-DimPlot(seurat_final3, cols = named_colors, reduction = "umap", label = TRUE, repel = TRUE, label.size = 3.5, label.color = "black")  + labs(x= "UMAP-1 (1st Abstract Dimension of the UMAP Embedding)", y="UMAP-2 (2nd Abstract Dimension of the UMAP Embedding)") + theme(plot.title = element_text(size = 2, face = "bold"), legend.position = "top", legend.justification = "center",
-    legend.box.just = "center", legend.text = element_text(size = 6), legend.spacing.x = unit(0.025, "cm"), legend.key.size = unit(0.2, "lines"), axis.title = element_text(size = 9), axis.text = element_text(size = 8)) 
-
+# Resetting to seurat cluster identities - optional 
 Idents(seurat_final3) <- "seurat_clusters"
 
 cluster_df <- data.frame(
@@ -548,6 +537,7 @@ cluster_df <- data.frame(
   Cluster = as.character(Idents(seurat_final3))
 )
 
+# Saving cluster identities as a .csv file 
 write.csv(cluster_df, "custom_clusters3.csv", row.names = FALSE)
 
 ```
@@ -561,13 +551,11 @@ table(seurat_final3$time_point) # There are some some samples E12, E14, that hav
 
 seurat_final3$CellType <- factor(Idents(seurat_final3), levels = levels(Idents(seurat_final3)))
 celltypes <- levels(seurat_final3$CellType)
-colors <- colorRampPalette(brewer.pal(8, "Set2"))(length(celltypes))
-named_colors <- setNames(colors, celltypes)
+
 
 
 dftotal <- as.data.frame(table(Timepoint = seurat_final3$time_point, 
                             CellType = seurat_final3$CellType))
-
 
 dftotal <- dftotal %>%
   group_by(Timepoint) %>%
@@ -582,39 +570,44 @@ ggplot(dftotal, aes(x = Timepoint, y = Percent, fill = fct_rev(CellType))) +
   theme(legend.position = "right",
         axis.text.x = element_text(angle = 45, hjust = 1, margin = margin(t = -15, r = 0, b = 5, l = 0)),
         axis.ticks.y = element_line(color = "black"),
-        axis.ticks.length.y = unit(0.1, "cm")) + 
+        axis.ticks.length.y = unit(0.1, "cm"),
+        axis.title.x = element_text(size = 30),  
+        axis.title.y = element_text(size = 30)) + 
   scale_y_continuous(breaks = seq(0, 100, by = 10))
 
-ggplot(dftotal, aes(x = Timepoint, y = CellType, size = Percent, fill = CellType)) +
-  geom_point(shape = 21, color = "black") +
+# Bubble plot based on proportions
+
+ggplot(dftotal %>% filter(Percent > 0),  # Filter out zeros
+       aes(x = Timepoint, y = CellType, size = Percent, fill = CellType)) +
+  geom_point(shape = 21, stroke = 0) +  # stroke = 0 removes the outline
   scale_fill_manual(values = named_colors) +
-  scale_size(range = c(1, 10)) +
-  labs(x = "Developmental Timepoint", y = "Cell Type", size = "Proportion (%)", fill = NULL) +  # <- Remove fill legend
-  guides(fill = "none",                                      # <- Remove cell type legend
-         size = guide_legend(override.aes = list(color = "black", fill = "black"))) +  # <- Black outline, white fill in size legend
+  scale_size(range = c(1, 14)) +
+  labs(
+    x = "Developmental Timepoint", 
+    y = "Cell Type", 
+    size = "Proportion (%)", 
+    fill = NULL
+  ) +
+  guides(
+    fill = "none",  # Removes fill legend (Cell Type)
+    size = guide_legend(override.aes = list(fill = "black"))  # All points in size legend are filled black
+  ) +
   theme_minimal(base_size = 10) +
   theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    panel.grid.major = element_line(color = "grey90")
-  )
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 10, face = "bold"),
+        axis.text.y = element_text(size = 10, face = "bold"),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        panel.grid.major = element_line(color = "grey90")
+    )
 
+# Plotting key genes on the UMAP
 
-FeaturePlot(seurat_final3, features = c("ptf1a", "atoh1"))
-
-
+FeaturePlot(seurat_final3, features = c("ptf1a", "atoh1", "neurog2", "ascl1"))
+ 
 ```
 
 
-```{r}
-# sub-setting to clusters of interest
-
-selected_clusters <- c("Early Purkinje Progenitors", "Early GABAergic Progenitors", "Early NPCs", "Glutamatergic CNs", "Purkinje Cells", "GABAergic Interneurons", "Glutamatergic Progenitors",
-"Early GABAergic Progenitors", "Glutamatergic Progenitors", "Early NPCs 2", "GABAergic Neuron Precursors", "Bergmann Glia", "GABAergic Progenitors", "Roof Plate Cells", "Astrocytes", "GABAergic Progenitors", "GABAergic Neurons", "Cycling Early NPCs")
-
-# Potentially try keeping by stage
-
-seurat_final <- subset(seurat_final, idents = selected_clusters)
-```
 
 
 ```{r}
@@ -624,19 +617,20 @@ target_clusters <- c("6", "2", "18")
 
 Early_NPCs <- subset(seurat_final3, idents = target_clusters)
 
-Early_NPCs <- CellCycleScoring(Early_NPCs, s.features = valid_s_genes, g2m.features = valid_g2m_genes, assay = "RNA", set.ident = TRUE)
+Early_NPCs <- CellCycleScoring(Early_NPCs, s.features = s.genes, g2m.features = g2m.genes, assay = "RNA", set.ident = TRUE)
 
- 
 # With cell cycle phase differences regressed out
 Early_NPCs$CC.Difference <- Early_NPCs$S.Score - Early_NPCs$G2M.Score
 
+Idents(Early_NPCs) <- "seurat_clusters"
+
+# Optional renaming
 
 Early_NPCs <- RenameIdents(Early_NPCs, 
                            "18" = "EP #3", 
                            "2" = "EP #2", 
                            "6" = "EP #1")
 
-Idents(Early_NPCs) <- "seurat_clusters"
 
 Early_NPCs  <- NormalizeData(Early_NPCs)
 Early_NPCs  <- FindVariableFeatures(Early_NPCs, selection.method = "vst", nfeatures = 2000, verbose = FALSE) # Based on the 2000 most variable features
@@ -664,46 +658,44 @@ DoHeatmap(Early_NPCs, features = npc_top_markers$gene, size = 3, group.colors = 
         strip.text.x = element_text(angle = 0, hjust = 1.0, size = 8, margin = margin(t = 0.5)), legend.position ="right") + guides(color = guide_colorbar(), fill = guide_colorbar(), size = "none")
 
 
-# Subclustering 
+# Selecting only the clusters of interest from this cluster 
+
 target_clusters <- c("0", "3", "2", "1") 
 
-Early_NPCs2 <- subset(Early_NPCs, idents = target_clusters)
+Early_NPCs2 <- subset(Early_NPCs, idents = target_clusters) 
 
-Early_NPCs2 <- CellCycleScoring(Early_NPCs2, s.features = valid_s_genes, g2m.features = valid_g2m_genes, assay = "RNA", set.ident = TRUE)
+Early_NPCs2 <- CellCycleScoring(Early_NPCs2, s.features = s.genes, g2m.features = g2m.genes, assay = "RNA", set.ident = TRUE)
 
  
 # With cell cycle phase differences regressed out
 Early_NPCs2$CC.Difference <- Early_NPCs2$S.Score - Early_NPCs2$G2M.Score
 
-
-Early_NPCs <- RenameIdents(Early_NPCs, 
-                           "18" = "EP #3", 
-                           "2" = "EP #2", 
-                           "6" = "EP #1")
-
-Idents(Early_NPCs) <- "seurat_clusters"
-
-
 Early_NPCs2  <- NormalizeData(Early_NPCs2)
 Early_NPCs2  <- FindVariableFeatures(Early_NPCs2, selection.method = "vst", nfeatures = 2000, verbose = FALSE) # Based on the 2000 most variable features
 
-Early_NPCs2<- ScaleData(Early_NPCs2, vars.to.regress = "CC.Difference", verbose = FALSE, features = unique(npc_top_markers2$gene))
+Early_NPCs2<- ScaleData(Early_NPCs2, vars.to.regress = "CC.Difference", verbose = FALSE) 
 
-Early_NPCs2 <- RenameIdents(Early_NPCs2, 
-                           "0" = "EP-1", 
-                           "3" = "EP-2", 
-                           "2" = "EP-3",
-                           "1" = "EP-4")
-                           
 Idents(Early_NPCs2) <- "seurat_clusters"
 
+# Optional renaming
+
+Early_NPCs2 <- RenameIdents(Early_NPCs2, 
+                           "1" = "Early NPC-1", 
+                           "3" = "Early NPC-2", 
+                           "2" = "Early NPC-3",
+                           "4" = "Early NPC-4")
+                           
 
 NPC_Markers2 <- FindAllMarkers(Early_NPCs2, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
 
+Early_NPCs2<- ScaleData(Early_NPCs2, vars.to.regress = "CC.Difference", verbose = FALSE,features = unique(NPC_Markers2$gene)) 
+
+# Expression between cluster and rest of the cells
+
 NPC_Markers2$pct.diff <- NPC_Markers2$pct.1 - NPC_Markers2$pct.2
 
-NPC_Markers$pct.diff <- NPC_Markers$pct.1 - NPC_Markers$pct.2
-
+# Exporting marker gene list to a .csv
+write.csv(NPC_Markers2, "EarlyNPC_Marker_Genes.csv", row.names = FALSE)
 
 # NPC_Markers2 <- NPC_Markers2[NPC_Markers2$"pct.diff" > 0.15,]
 
@@ -714,10 +706,12 @@ npc_top_markers2 <- NPC_Markers2 %>%
   arrange(cluster, desc(avg_log2FC)) %>%
   ungroup()
 
+npc_top_markers2 <- npc_top_markers2[, 6:7]
 
-DoHeatmap(Early_NPCs2, features = npc_top_markers2$gene, size = 3, draw.lines = TRUE, group.colors = c( "NA","NA","NA", "NA"), angle = 0, ) + labs(y = "Gene Name") +
+
+DoHeatmap(Early_NPCs2, features = npc_top_markers2$gene, size = 3, draw.lines = TRUE, group.colors = c( "NA","NA","NA", "NA"), angle = 0, hjust = 0.5) + labs(y = "Gene Name") +
   theme(axis.text.y = element_text(size = 10),
-        strip.text.x = element_text(angle = 0, hjust = 1.0, size = 8, margin = margin(t = 0.5),), legend.position ="right") + guides(color = guide_colorbar(), fill = guide_colorbar(), size = "none")
+        strip.text.x = element_text(angle = 0, hjust = 0.5, size = 8, margin = margin(t = 0.5),), legend.position ="right") + guides(color = guide_colorbar(), fill = guide_colorbar(), size = "none")
 
 ```
 
@@ -745,12 +739,11 @@ go_df <- bind_rows(
 )
 
 write.csv(go_df, "GO_df.csv", row.names = FALSE)
+go_df <- read_csv("GO_df.csv")
 
-# go_df_filtered <- go_df %>%
-  filter(p.adjust < 0.01, Count >= 5) %>%       # Keep only significant terms with enough genes
-  group_by(Cluster) %>%
-  slice_max(FoldEnrichment, n = 10) %>%               # Top 10 terms per cluster
-  ungroup()
+write.csv(go_df_filtered, "go_df_filtered.csv", row.names = FALSE)
+go_df_filtered <- read_csv("go_df_filtered2.csv")
+
 
 go_df_filtered <- go_df %>%
   filter(p.adjust < 0.01) %>%
@@ -760,6 +753,28 @@ go_df_filtered <- go_df %>%
   slice_head(n = 10) %>%
   ungroup()
 
+go_df_filtered <- go_df_filtered %>%
+  mutate(cluster_column = recode(Cluster,
+                                 "Cluster_EP #4" = "Early NPC-4",
+                                 "Cluster_EP #3" = "Early NPC-3",
+                                 "Cluster_EP #2" = "Early NPC-2", 
+                                 "Cluster_EP #1"= "Early NPC-1"
+                                 # add more mappings as needed
+                                 ))
+
+
+go_df_filtered <- go_df_filtered %>%
+  arrange(cluster_column, Description) %>%
+  mutate(Description = factor(Description, levels = unique(Description)))
+
+ggplot(go_df_filtered, aes(x = cluster_column, y = Description, size = Count, color = p.adjust)) +
+  geom_point() +
+  scale_color_continuous(low = "red", high = "blue", trans = "reverse") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.y = element_text(size = 6)) +
+  labs(x = "Cluster", y = "GO Term", size = "Gene Count", color = "Adj. p-value")
+
+
 ```
 
 
@@ -768,20 +783,16 @@ go_df_filtered <- go_df %>%
 
 cds2 <- as.cell_data_set(seurat_final3)
 
-cds <- preprocess_cds(cds, num_dim = 40)
-
-cds <- reduce_dimension(cds)
-
 # Check partitions 
 
 cds@clusters$UMAP$partitions
 
 # Assigning all cells to one partition, only if you don't want Monocle to make its own
 
-recreate.partition <- c(rep(1, length(cds@colData@rownames)))
-names(recreate.partition) <- cds@colData@rownames
+recreate.partition <- c(rep(1, length(cds2@colData@rownames)))
+names(recreate.partition) <- cds2@colData@rownames
 recreate.partition <- as.factor(recreate.partition)
-cds@clusters$UMAP$partitions <- recreate.partition
+cds2@clusters$UMAP$partitions <- recreate.partition
 
 list_cluster<- seurat_final3@active.ident
 cds2@clusters$UMAP$clusters <- list_cluster
@@ -793,99 +804,227 @@ cds2@clusters$UMAP$clusters <- list_cluster
 
 reducedDims(cds2)$PCA <- seurat_final3@reductions$pca@cell.embeddings
 reducedDims(cds2)$UMAP <- seurat_final3@reductions$umap@cell.embeddings
+rowData(cds2)$gene_short_name <- rownames(rowData(cds2))
+colData(cds2)$Sample_time <- seurat_final3@meta.data$time_point
+colData(cds2)$seurat_clusters <- seurat_final3@meta.data$seurat_clusters
+# cds@clusters$UMAP$clusters <- colData(cds2)$seurat_clusters
 
 
-# Monocle clustering
-cds2 <- cluster_cells(cds2, reduction_method = "UMAP")
-
+# Monocle clustering, only if using Monocle Partitions
+# cds2 <- cluster_cells(cds2, reduction_method = "UMAP")
 
 # Construct principal trajectory path
-cds2 <- learn_graph(cds2) #use_partition = FALSE
-
-cds <- order_cells(cds, reduction_method = 'UMAP', root_cells = colnames(cds)[cds@clusters$UMAP$clusters == "Early Progenitors"])
+cds2 <- learn_graph(cds2) 
 
 plot_cells(cds2, color_cells_by = "partition")
 
 cds2 <- order_cells(cds2)
 
+# Assign pseudotime values
+
+colData(cds2)$pseudotime <- pseudotime(cds2)
+
+# Order cells by cluster type
+
+cds <- order_cells(cds, reduction_method = 'UMAP', root_cells = colnames(cds)[cds@clusters$UMAP$clusters == "Early Progenitors"])
 
 
-colData(cds)$seurat_clusters <- Idents(seurat_final3)
-cds@clusters$UMAP$clusters <- colData(cds)$seurat_clusters
+
+saveRDS(cds2, file = "cds2.rds")
+cds2 <- readRDS("cds2.rds")
+
+
 
 plot_cells(cds, group_cells_by = "seurat_clusters", label_cell_groups = TRUE,
            label_groups_by_cluster = TRUE, reduction_method = "UMAP")
 
 
-
-
-
-
 #cds <- order_cells(cds, root_cells =colnames(cds)[cds@colData$celltype == "Roof Plate Cells"])
 # <- order_cells(cds, root_cells =colnames(cds)[cds@colData$celltype == "Early Progenitors 1"])
 
-#table(partitions(cds))
+
+plot_cells(cds2, color_cells_by = "pseudotime")
+
+plot_cells(cds2, color_cells_by = "pseudotime", label_leaves=FALSE,
+label_branch_points=FALSE,
+graph_label_size=3,
+cell_size = 0.4, 
+alpha = 0.3)
+
+
+plot_cells(cds2, color_cells_by = "cluster", label_groups_by_cluster = FALSE, label_branch_points = FALSE, label_roots = TRUE, label_leaves = FALSE,  group_label_size = 4) + theme(legend.position = "right")
+
+
+# Differential expression across branches
+
+target_clusters <- c("3", "21", "13", "15")
+cells_to_keep <- colData(cds2)$seurat_clusters %in% target_clusters
+cds2_subset <- cds2[, cells_to_keep]
+
+# Creating the model 
+model_formula_str <- "~pseudotime * seurat_clusters"
+
+# Fitting the model to the subset of data
+gene_fits_subset <- fit_models(cds2_subset, model_formula_str = model_formula_str)
+
+diff_expr_results_subset <- coefficient_table(gene_fits_subset)
+
+# Filtering the result to only contain the genes the pass quality checks
+sig_genes_interaction <- subset(diff_expr_results_subset,
+                                 grepl("pseudotime:seurat_clusters", term) &
+                                 q_value < 0.05 & num_cells_expressed > 10)
+
+sig_genes_interaction <- sig_genes_interaction[order(sig_genes_interaction$q_value), ]
+
+
+plotgenes <- head(sig_genes_interaction$gene_short_name, 20)
+plotgenes <- data.frame(plotgenes)
+colnames(plotgenes) <- "gene_name"
+
+write.csv(plotgenes, file = "plotgenes.csv", row.names = FALSE)
+read
+
+plotgenes2 <- read.csv("plotgenes.csv", header = TRUE)
+
+# Keeping genes of interest
+plotgenes <- c("id4", "pantr1", "sox4", "serpine2", "id3")
+
+
+# plot_genes <- head(plotgenes$gene_name, 10)
+
+cds2_subset.1 <- cds2_subset[rowData(cds2_subset)$gene_short_name %in% plotgenes,]
+
+# Rename the clusters with cell type
+
+colData(cds2_subset.1)$seurat_clusters <- factor(colData(cds2_subset.1)$seurat_clusters,
+                                                 levels = c("3", "21","13", "15"), 
+                                                 labels = c("GABAergic Progenitors", "GABAergic Progenitors", "Glial Lineage", "Glial Lineage"))
+
+
+cds2_subset.1 <- order_cells(cds2_subset.1)
+
+plot_genes_in_pseudotime(cds2_subset.1,
+                         color_cells_by = "seurat_clusters",
+                         min_expr = 0.5)
+ 
+cds_gaba <- cds2_subset.1[, colData(cds2_subset.1)$seurat_clusters == "GABAergic Progenitors"]
+
+cds_gaba <- choose_cells(cds_gaba)
+cds_gaba <- order_cells(cds_gaba)
+cds_gaba <- estimate_size_factors(cds_gaba)
+
+cds_glial <- cds2_subset.1[, colData(cds2_subset.1)$seurat_clusters == "Glial Lineage"]
+
+cds_glial <- choose_cells(cds_glial)
+cds_glial <- order_cells(cds_glial)
+cds_glial <- cds_glial[,Matrix::colSums(counts(cds_glial)) != 0]
+cds_glial <- estimate_size_factors(cds_glial)
+
+plot_genes_in_pseudotime(cds_gaba, color_cells_by = "seurat_clusters", min_expr = 0.5) + NoLegend()
+
+gene_order <- c("id3", "id4", "pantr1", "serpine2", "sox4")
+
+p <- plot_genes_in_pseudotime(cds_glial[gene_order,], color_cells_by = "seurat_clusters", min_expr = 0.5, label = FALSE) 
+
+p + scale_color_manual(values = rep("turquoise", length(unique(colData(cds_glial)$seurat_clusters))))
+
+plot_genes_in_pseudotime(cds2_subset.1,color_cells_by = "Sample_time", min_expr = 0.5)
+
+
+RL_VZ <- c("atoh1", "ptf1a", "ascl1", "neurog2")
+
+
+cds2.1 <- cds2[rowData(cds2)$gene_short_name %in% RL_VZ,]
+
+plot_genes_in_pseudotime(cds2.1,color_cells_by = "Sample_time", min_expr = 0.5)
+
+plot_genes_in_pseudotime(cds2,)
+
+
+#atoh and ptf1a over pseudo time
+
+#genes over pseuotime early RL vs other branch progenitors  
+
+cds2_subset <- estimate_size_factors(cds2_subset)
+cds2_subset.1 <- estimate_size_factors(cds2_subset.1)
+
+
+# Use graph_test() on full trajectory for unsupervised branch-related DE.
+
+cds2_subset2 <- choose_cells(cds2)
+cds2_subset2 <- order_cells(cds2_subset2)
+
+subset_pr_test_res <- graph_test(cds2_subset2, neighbor_graph="principal_graph", cores=4)
 
 
 
-plot_cells(cds, color_cells_by = "pseudotime")
+subset_pr_test_rest2 <- row.names(subset(subset_pr_test_res, q_value < 0.05 & !is.na(q_value)))
+saveRDS(subset_pr_test_rest2, file = "subset_pr_test_rest2.rds")
+subset_pr_test_rest2 <- readRDS("subset_pr_test_rest2.rds")
 
-plot_cells(cds, color_cells_by = "cluster", label_groups_by_cluster = FALSE, label_branch_points = FALSE, label_roots = TRUE, label_leaves = FALSE,  group_label_size = 4) + theme(legend.position = "right")
+cds2_subset2 <- preprocess_cds(cds2_subset2, num_dim = 50, method = "PCA")
 
-
-
-cds$monocle3.pseudotime <- pseudotime(cds)
-
-data.pseudo <- as.data.frame(colData(cds))
-
-ggplot(data.pseudo, aes(monocle3.pseudotime, reorder(ident, monocle3.pseudotime, median))) + geom_boxplot()
+gene_module_df <- find_gene_modules(cds2_subset2[subset_pr_test_rest2,], resolution=0.001)
 
 
-# Genes that change as a function of pseudotime:
-  
-deg <- graph_test(cds, neighbor_graph = 'principal_graph', cores = 4)
-
-# filter using q values
-
-deg %>%
-  arrange(q_value) %>%
-  filter (status == 'ok') %>%
-  head()
-
-FeaturePlot(seurat_final, features = c('RGS20', 'RRS1', 'ADHFE1'  ))
-
-# gene enrichment or pathway analysis
-
-merged_obj <- readRDS("merged_obj.rds")
-JoinLayers(merged_obj)
-cds3 <- as.cell_data_set(merged_obj)
-cds3 <- cluster_cells(cds3, reduction_method = "UMAP")
-cds3 <- learn_graph(cds3)
-
-```
+# maybe select only the most significant ones
 
 
 
+gene_module_df <- find_gene_modules(cds2_subset2[subset_pr_test_rest2, ], resolution=0.001) 
 
-``` {r}
-# Average expression (optional)
+write_csv(gene_module_df, file = "gene_module_df.csv")
+gene_module_df <- read_csv("gene_module_df.csv")
+write_csv(gene_module_df, file = "gene_module_df2.csv")
 
-agg_expr <- AggregateExpression(
-  object = merged_obj,
-  group.by = "seurat_clusters",  # Or use Idents(seurat_obj)
-  assays = "RNA",
-  slot = "data"  # "data" = log-normalized counts, "counts" = raw counts
+
+selected_modules <- c(1, 2, 3, 4, 5, 6)
+selected_modules <- c(2, 3, 5, 6, 7, 8)
+
+gene_module_df <- gene_module_df %>% 
+  filter(module %in% selected_modules)
+
+plot_cells(
+    cds2_subset2,
+    genes = gene_module_df,
+    show_trajectory_graph = FALSE,
+    label_cell_groups = FALSE,
+    label_leaves = FALSE,
+    label_branch_points = FALSE,
+    color_cells_by = "pseudotime"
 )
 
-# Access averaged expression matrix
-expr_matrix <- agg_expr$RNA
 
-# Show top expressed genes in cluster 0 (now named "g0")
-head(sort(expr_matrix[,"g5"], decreasing = TRUE), 20)
+top_genes_per_module <- gene_module_df %>%
+  group_by(module) %>%
+  group_split() %>%
+  setNames(paste0("module_", sapply(., function(x) unique(x$module)))) %>%
+  lapply(function(df) {
+    genes <- df$id
+    # Calculate variance for these genes
+    gene_vars <- apply(exprs(cds2_subset2[genes, ]), 1, var)
+    # Select top 5 by variance
+    names(sort(gene_vars, decreasing = TRUE))[1:10]
+  })
+
+top_genes_df <- bind_rows(
+  lapply(names(top_genes_per_module), function(mod) {
+    data.frame(
+      module = mod,
+      gene = top_genes_per_module[[mod]],
+      stringsAsFactors = FALSE
+    )
+  })
+)
+
+write
+
+# Pick top 5 most variable genes in the module
+
+# Plot only these genes
+plot_genes_in_pseudotime(cds2_subset2[top_genes, ])
 
 ```
-
-
 
 
 ``` {r}
