@@ -1,4 +1,4 @@
-# Single Cell RNA Seq Pipeline for Developmental Data
+# Single Cell RNA-Seq Pipeline for Developmental Data
 
 The goal of this project is to explore the trajectory of early Neural Progenitor Cell (NPC) lineages in the developing murine cerebellum. Brain tissue samples were collected from 12 critical developmental timepoints randing from embryonic day E10 to postnatal day P10. The scRNA-seq data was retrieved from the GEO Accession Viewer (GEO Accession GSE224466). 
 
