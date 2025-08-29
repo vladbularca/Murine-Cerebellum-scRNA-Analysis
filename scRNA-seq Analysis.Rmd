@@ -37,7 +37,6 @@ library("igraph")
 
 ```
 
-
 ```{r, echo=TRUE, results='hide', message=FALSE}
 
 # Preparing folder format for Seurat Object creation
@@ -63,8 +62,6 @@ for (prefix in prefixes) {
   file.rename(files_to_move,
             file.path(sample_dir, basename(files_to_move)))}
 ```
-
-
 
 ```{r }
 
@@ -157,8 +154,6 @@ head(seurat_list[[1]][["percent.ribo"]])
 
 ```
 
-
-
 ``` {r}
 # Sub-setting each object to filter out cells with over 10 % mitochondrial DNA, remove mitochondrial and ribosomal genes, cells with less than 3200 total transcripts and over 15,000 transcripts and those with less than 500 features 
 
@@ -206,7 +201,6 @@ sapply(filtered_list, function(obj) {tapply(obj$nCount_RNA, obj$sample, mean)})
 
 ```
 
-
 ``` {r}
 # Violin plot for % of mitochondrial genes in the first sample, checking to confirm that no cells have MT content above the threshold. 
 
@@ -215,8 +209,6 @@ VlnPlot(filtered_list[[1]], features = "percent.mt", pt.size = 0.1, layer = "cou
 VlnPlot(filtered_list[[1]], features = "percent.ribo", pt.size = 0.1, layer = "counts") + NoLegend()
 
 ```
-
-
 
 ``` {r}
 # Additional summary statistics
@@ -230,8 +222,6 @@ sapply(filtered_list, function(seurat_obj) {sum(seurat_obj$nCount_RNA == 0, na.r
 sapply(seurat_list, function(seurat_obj) {sum(seurat_obj$nCount_RNA > 2000 & seurat_obj$nCount_RNA < 15000, na.rm = TRUE)})
 
 ```
-
-
 
 ``` {r}
 # Additional analysis (optional)
@@ -255,10 +245,6 @@ ggplot(melted_df, aes(x = Sample, y = value, fill = variable)) +
 
 
 ```
-
-
-
-
 
 ``` {r}
 # Merging all objects into one Seurat object 
@@ -383,7 +369,6 @@ write.csv(cell_counts, "cell_counts.csv", row.names = FALSE)
 
 ``` 
 
-
 ``` {r}
 # PCA, clustering and UMAP
 
@@ -403,7 +388,6 @@ merged_obj <- readRDS("merged_obj.rds")
 table(merged_obj$seurat_clusters)
 
 ```
-
 
 ``` {r}
 # Checking # of PCAs to use for UMAP
@@ -606,9 +590,6 @@ ggplot(dftotal %>% filter(Percent > 0),  # Filter out zeros
 FeaturePlot(seurat_final3, features = c("ptf1a", "atoh1", "neurog2", "ascl1"))
  
 ```
-
-
-
 
 ```{r}
 # Differential expression of the early neural progenitor clusters
@@ -1001,7 +982,6 @@ top_genes_df <- bind_rows(
   })
 )
 ```
-
 
 ``` {r}
 # Creating and saving Loupe objects for further analysis in Loupe Browser 10
