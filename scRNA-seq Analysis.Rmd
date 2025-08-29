@@ -708,6 +708,7 @@ npc_top_markers2 <- NPC_Markers2 %>%
 
 npc_top_markers2 <- npc_top_markers2[, 6:7]
 
+# Heatmap visualization
 
 DoHeatmap(Early_NPCs2, features = npc_top_markers2$gene, size = 3, draw.lines = TRUE, group.colors = c( "NA","NA","NA", "NA"), angle = 0, hjust = 0.5) + labs(y = "Gene Name") +
   theme(axis.text.y = element_text(size = 10),
@@ -719,6 +720,8 @@ DoHeatmap(Early_NPCs2, features = npc_top_markers2$gene, size = 3, draw.lines = 
 # GO-Enrichment Analysis
 
 NPC_Markers2$gene <- str_to_sentence(NPC_Markers2$gene)
+
+# Running GO for per cluster 
 
 go_results_list <- NPC_Markers2 %>%
   filter(p_val_adj < 0.05) %>%
@@ -741,9 +744,9 @@ go_df <- bind_rows(
 write.csv(go_df, "GO_df.csv", row.names = FALSE)
 go_df <- read_csv("GO_df.csv")
 
-write.csv(go_df_filtered, "go_df_filtered.csv", row.names = FALSE)
-go_df_filtered <- read_csv("go_df_filtered2.csv")
 
+
+# Top 10 GO terms for each cluster: 
 
 go_df_filtered <- go_df %>%
   filter(p.adjust < 0.01) %>%
@@ -767,6 +770,11 @@ go_df_filtered <- go_df_filtered %>%
   arrange(cluster_column, Description) %>%
   mutate(Description = factor(Description, levels = unique(Description)))
 
+write.csv(go_df_filtered, "go_df_filtered.csv", row.names = FALSE)
+go_df_filtered <- read_csv("go_df_filtered2.csv")
+
+# Plotting GO terms per cluster
+
 ggplot(go_df_filtered, aes(x = cluster_column, y = Description, size = Count, color = p.adjust)) +
   geom_point() +
   scale_color_continuous(low = "red", high = "blue", trans = "reverse") +
@@ -779,7 +787,9 @@ ggplot(go_df_filtered, aes(x = cluster_column, y = Description, size = Count, co
 
 
 ```{r}
-# Monocle3, turn Seurat to CDS
+# Monocle3 Pseudotime Analysis, 
+
+# First step is to turn the Seurat object into a to cell_data_set (cds)
 
 cds2 <- as.cell_data_set(seurat_final3)
 
@@ -797,21 +807,19 @@ cds2@clusters$UMAP$partitions <- recreate.partition
 list_cluster<- seurat_final3@active.ident
 cds2@clusters$UMAP$clusters <- list_cluster
 
-
-#cds@clusters$UMAP$clusters <- as.character(Idents(seurat_final))
-#cds@colData$celltype <- as.character(Idents(seurat_final))
-# check if there are discrepancies between clustering 
+# Transferring over embedding information and other relevant columns from the seurat obejct
 
 reducedDims(cds2)$PCA <- seurat_final3@reductions$pca@cell.embeddings
 reducedDims(cds2)$UMAP <- seurat_final3@reductions$umap@cell.embeddings
 rowData(cds2)$gene_short_name <- rownames(rowData(cds2))
 colData(cds2)$Sample_time <- seurat_final3@meta.data$time_point
 colData(cds2)$seurat_clusters <- seurat_final3@meta.data$seurat_clusters
-# cds@clusters$UMAP$clusters <- colData(cds2)$seurat_clusters
 
 
 # Monocle clustering, only if using Monocle Partitions
+
 # cds2 <- cluster_cells(cds2, reduction_method = "UMAP")
+
 
 # Construct principal trajectory path
 cds2 <- learn_graph(cds2) 
@@ -824,24 +832,20 @@ cds2 <- order_cells(cds2)
 
 colData(cds2)$pseudotime <- pseudotime(cds2)
 
+
 # Order cells by cluster type
 
 cds <- order_cells(cds, reduction_method = 'UMAP', root_cells = colnames(cds)[cds@clusters$UMAP$clusters == "Early Progenitors"])
-
 
 
 saveRDS(cds2, file = "cds2.rds")
 cds2 <- readRDS("cds2.rds")
 
 
+# Various plots of the trajectory and pseudotime
 
 plot_cells(cds, group_cells_by = "seurat_clusters", label_cell_groups = TRUE,
            label_groups_by_cluster = TRUE, reduction_method = "UMAP")
-
-
-#cds <- order_cells(cds, root_cells =colnames(cds)[cds@colData$celltype == "Roof Plate Cells"])
-# <- order_cells(cds, root_cells =colnames(cds)[cds@colData$celltype == "Early Progenitors 1"])
-
 
 plot_cells(cds2, color_cells_by = "pseudotime")
 
@@ -855,7 +859,7 @@ alpha = 0.3)
 plot_cells(cds2, color_cells_by = "cluster", label_groups_by_cluster = FALSE, label_branch_points = FALSE, label_roots = TRUE, label_leaves = FALSE,  group_label_size = 4) + theme(legend.position = "right")
 
 
-# Differential expression across branches
+# Differential expression across branches, to identify key genes involved in branching cell fate
 
 target_clusters <- c("3", "21", "13", "15")
 cells_to_keep <- colData(cds2)$seurat_clusters %in% target_clusters
@@ -883,12 +887,13 @@ colnames(plotgenes) <- "gene_name"
 
 write.csv(plotgenes, file = "plotgenes.csv", row.names = FALSE)
 read
-
 plotgenes2 <- read.csv("plotgenes.csv", header = TRUE)
 
-# Keeping genes of interest
-plotgenes <- c("id4", "pantr1", "sox4", "serpine2", "id3")
 
+
+# Keeping genes of interest to visualzie expression over pseudotime
+
+plotgenes <- c("id4", "pantr1", "sox4", "serpine2", "id3")
 
 # plot_genes <- head(plotgenes$gene_name, 10)
 
@@ -931,25 +936,11 @@ p + scale_color_manual(values = rep("turquoise", length(unique(colData(cds_glial
 plot_genes_in_pseudotime(cds2_subset.1,color_cells_by = "Sample_time", min_expr = 0.5)
 
 
-RL_VZ <- c("atoh1", "ptf1a", "ascl1", "neurog2")
-
-
-cds2.1 <- cds2[rowData(cds2)$gene_short_name %in% RL_VZ,]
-
-plot_genes_in_pseudotime(cds2.1,color_cells_by = "Sample_time", min_expr = 0.5)
-
-plot_genes_in_pseudotime(cds2,)
-
-
-#atoh and ptf1a over pseudo time
-
-#genes over pseuotime early RL vs other branch progenitors  
-
 cds2_subset <- estimate_size_factors(cds2_subset)
 cds2_subset.1 <- estimate_size_factors(cds2_subset.1)
 
 
-# Use graph_test() on full trajectory for unsupervised branch-related DE.
+# Using graph_test() on subset of cells to determine modules of co-expressed genes
 
 cds2_subset2 <- choose_cells(cds2)
 cds2_subset2 <- order_cells(cds2_subset2)
@@ -957,26 +948,19 @@ cds2_subset2 <- order_cells(cds2_subset2)
 subset_pr_test_res <- graph_test(cds2_subset2, neighbor_graph="principal_graph", cores=4)
 
 
-
 subset_pr_test_rest2 <- row.names(subset(subset_pr_test_res, q_value < 0.05 & !is.na(q_value)))
-saveRDS(subset_pr_test_rest2, file = "subset_pr_test_rest2.rds")
-subset_pr_test_rest2 <- readRDS("subset_pr_test_rest2.rds")
 
 cds2_subset2 <- preprocess_cds(cds2_subset2, num_dim = 50, method = "PCA")
 
 gene_module_df <- find_gene_modules(cds2_subset2[subset_pr_test_rest2,], resolution=0.001)
 
 
-# maybe select only the most significant ones
-
-
-
-gene_module_df <- find_gene_modules(cds2_subset2[subset_pr_test_rest2, ], resolution=0.001) 
-
 write_csv(gene_module_df, file = "gene_module_df.csv")
 gene_module_df <- read_csv("gene_module_df.csv")
 write_csv(gene_module_df, file = "gene_module_df2.csv")
 
+
+# Plotting modules on UMAP of subsetted data
 
 selected_modules <- c(1, 2, 3, 4, 5, 6)
 selected_modules <- c(2, 3, 5, 6, 7, 8)
@@ -1016,34 +1000,14 @@ top_genes_df <- bind_rows(
     )
   })
 )
-
-write
-
-# Pick top 5 most variable genes in the module
-
-# Plot only these genes
-plot_genes_in_pseudotime(cds2_subset2[top_genes, ])
-
 ```
 
 
 ``` {r}
-# Creating Loupe objects for further analysis
-
-merged_obj_1 <- JoinLayers(merged_obj)
-create_loupe_from_seurat(merged_obj_1, output_name = "loupe_2")
-
-
-merged_obj_2 <- JoinLayers(merged_obj2)
-eate_loupe_from_seurat(merged_obj_2, output_name = "loupe_2")
-
+# Creating and saving Loupe objects for further analysis in Loupe Browser 10
 
 seurat_final3 <- JoinLayers(seurat_final3)
 create_loupe_from_seurat(seurat_final3, output_name = "loupe_5")
-
-create_loupe_from_seurat(Early_NPCs2, output_name = "EarlyNPCs")
-
-
 
 ```
 
